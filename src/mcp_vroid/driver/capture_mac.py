@@ -15,11 +15,13 @@ for the process that hosts this server.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+import Quartz
 from PIL import Image
 
 from . import window_mac as W
@@ -44,27 +46,48 @@ def screen_recording_ok() -> bool:
         return True  # unknown; let the actual capture report failure
 
 
-def _screen_scale() -> float:
+def _display_for(win: "W.Window | None") -> int:
+    """CGDirectDisplayID of the display holding the window's centre (else main)."""
     try:
-        from AppKit import NSScreen
+        if win is not None:
+            cx, cy = win.x + win.w / 2, win.y + win.h / 2
+            err, ids, cnt = Quartz.CGGetDisplaysWithPoint((cx, cy), 8, None, None)
+            if err == 0 and cnt:
+                return int(ids[0])
+        return int(Quartz.CGMainDisplayID())
+    except Exception:
+        return 0
 
-        s = NSScreen.mainScreen()
-        return float(s.backingScaleFactor()) if s is not None else 1.0
+
+def _display_bounds(did: int) -> tuple[int, int, int, int]:
+    """(x, y, w, h) of a display in global points, top-left origin."""
+    r = Quartz.CGDisplayBounds(did)
+    return (int(r.origin.x), int(r.origin.y), int(r.size.width), int(r.size.height))
+
+
+def output_scale() -> float:
+    """Backing scale (pixels per point) of the display VRoid is on."""
+    try:
+        did = _display_for(W.find_window())
+        mode = Quartz.CGDisplayCopyDisplayMode(did)
+        pts = Quartz.CGDisplayModeGetWidth(mode)
+        px = Quartz.CGDisplayModeGetPixelWidth(mode)
+        return float(px) / float(pts) if pts else 1.0
     except Exception:
         return 1.0
 
 
-def output_scale() -> float:
-    return _screen_scale()
+_SEQ = re.compile(r"^(\d+)")
 
 
 def next_capture_path(tag: str = "") -> Path:
+    # Parse the whole leading number: slicing three digits wrapped "1000-..."
+    # back to 100 and overwrote older captures.
     n = 0
-    for p in CAPTURES.glob("[0-9][0-9][0-9]*.png"):
-        try:
-            n = max(n, int(p.name[:3]))
-        except ValueError:
-            pass
+    for p in CAPTURES.glob("[0-9]*.png"):
+        m = _SEQ.match(p.name)
+        if m:
+            n = max(n, int(m.group(1)))
     name = f"{n + 1:03d}" + (f"-{tag}" if tag else "") + ".png"
     return CAPTURES / name
 
@@ -132,15 +155,18 @@ def grab_window(win: W.Window | None = None, tag: str = "") -> Shot:
 
 
 def grab_screen(tag: str = "") -> Shot:
-    path = next_capture_path(tag or "screen")
-    pt_width = 0
-    try:
-        from AppKit import NSScreen
+    """Capture the whole display VRoid is on (the main display if unknown).
 
-        screen = NSScreen.mainScreen()
-        if screen is not None:
-            pt_width = int(screen.frame().size.width)
+    Uses a region capture of that display's bounds, so the Shot maps image
+    pixels back to global screen points even on a secondary display.
+    """
+    did = _display_for(W.find_window())
+    try:
+        x, y, w, h = _display_bounds(did)
     except Exception:
-        pass
-    img, scale = _capture([SCREENCAPTURE, "-x", str(path)], path, pt_width)
-    return Shot(img, path, 0, 0, scale)
+        x = y = w = h = 0
+    if w and h:
+        return grab_region(x, y, w, h, tag=tag or "screen")
+    path = next_capture_path(tag or "screen")
+    img, _ = _capture([SCREENCAPTURE, "-x", "-m", str(path)], path, 0)
+    return Shot(img, path, 0, 0, 1.0)

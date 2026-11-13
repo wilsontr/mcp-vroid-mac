@@ -154,6 +154,20 @@ macOS app here is **2.16.0**, so some flows may need re-measuring:
   drives the native save panel (⌘⇧G → folder → filename → Return), but this
   path is the least tested part of the port.
 
+- The fractional anchors were measured on a borderless fullscreen window.
+  The macOS window has a title bar and any size, so expect the anchor-based
+  flows above to miss until they are re-measured on macOS.
+- VRoid for macOS is sandboxed: its save panel belongs to a separate process
+  and never shows in a window capture. Use `vroid_screenshot(whole_screen=true)`
+  to see it.
+- Clicks, drags and scrolls refuse when another window (an always-on-top
+  panel, another app) covers the target point; move it out of the way.
+- Keys: `ctrl`/`cmd` both mean ⌘, `Control_L` is the real Control key,
+  `Delete` is forward-delete and `BackSpace` is ⌫.
+- If VRoid will not come to the front (macOS 14+ can ignore activation from a
+  background process), allow the hosting app under **Automation** for VRoid
+  Studio, or click VRoid's window once.
+
 The raw tools (`screenshot`, `find_text`, `find_button`, `click`, `type`,
 `key`, `drag`, `scroll`) are the reliable foundation — the model can always
 fall back to them, look at the screen, and drive the app step by step.

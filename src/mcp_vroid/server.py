@@ -197,13 +197,16 @@ async def vroid_launch(
 
     def work() -> dict[str, Any]:
         global _prev_workspace
-        if restart and W.find_window():
-            subprocess.run(
-                ["osascript", "-e",
-                 'tell application id "net.pixiv.vroid.macosx" to quit'],
-                capture_output=True,
-            )
-            time.sleep(4)
+        if restart:
+            if sys.platform == "darwin":
+                # Polite quit first; force-terminate if an unsaved-changes
+                # prompt (or anything else) keeps it alive.
+                if not W.quit_app(timeout=15, force=True):
+                    raise RuntimeError("VRoid Studio did not quit; restart aborted")
+            elif W.find_window():
+                subprocess.run(["pkill", "-f", "VRoidStudio.exe"],
+                               capture_output=True)
+                time.sleep(5)
         win, prev = W.prepare(timeout)
         if _prev_workspace is None and prev != W.WORKSPACE:
             _prev_workspace = prev
@@ -247,6 +250,9 @@ async def vroid_status() -> dict[str, Any]:
                 "tesseract": bool(shutil.which("tesseract")),
                 "screen_recording": screen_ok,
                 "accessibility": ax_ok,
+                # Not checkable without triggering the prompt; only needed
+                # when activateWithOptions_ is ignored (macOS 14+).
+                "automation": "only needed for the osascript focus fallback",
             }
         else:
             from .driver.paths import VPOINTER
@@ -280,6 +286,10 @@ async def vroid_status() -> dict[str, Any]:
                 "server in System Settings > Privacy & Security > Accessibility, "
                 "then restart the server."
             )
+        if darwin and win is None and W.running_app() is not None:
+            out["window_hint"] = (
+                "VRoid Studio is running but has no visible window (minimised, "
+                "hidden, or on another Space). vroid_launch re-opens it.")
         if win is not None:
             try:
                 out["capture_scale"] = C.output_scale()
@@ -328,9 +338,10 @@ async def vroid_screenshot(
     whole_screen: Annotated[
         bool,
         Field(description="Capture the whole output instead of just the VRoid "
-                          "window - needed when a save/export panel is a "
-                          "separate window (Linux/Wine) rather than a macOS "
-                          "sheet."),
+                          "window - needed to see a save/export panel: "
+                          "Wine draws it as a separate window, and the "
+                          "sandboxed macOS app's panel comes from another "
+                          "process, so a window capture never shows it."),
     ] = False,
     full_resolution: Annotated[
         bool,
@@ -682,15 +693,19 @@ async def vroid_key(
         Field(description="A key, optionally with modifiers, e.g. 'Return', "
                           "'Escape', 'Tab', 'BackSpace', 'ctrl+s', "
                           "'ctrl+shift+s', 'ctrl+z'. Names follow X keysyms; "
-                          "'enter', 'esc', 'space', arrows are aliased."),
+                          "'enter', 'esc', 'space', arrows are aliased. On "
+                          "macOS 'ctrl'/'cmd' both mean Command (⌘), "
+                          "'Control_L' is the real Control key, and "
+                          "'Delete' is forward-delete."),
     ],
     times: Annotated[int, Field(description="Repeat count.")] = 1,
 ) -> dict[str, Any]:
     """Press a key combination in the focused VRoid widget.
 
     Useful ones: Return confirms a value box or a dialog's default button;
-    ctrl+s saves the project (⌘ on macOS); ctrl+shift+s is Save As;
-    ctrl+z/ctrl+y undo/redo in the editor.
+    ctrl+s saves the project (⌘S on macOS); ctrl+shift+s is Save As;
+    ctrl+z undoes. Redo is ctrl+y on Linux/Wine and usually cmd+shift+z on
+    macOS.
 
     Note Escape does NOT close VRoid's hamburger menu - click elsewhere to
     dismiss it.

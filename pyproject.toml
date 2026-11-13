@@ -49,7 +49,10 @@ mcp-vroid-mac = "mcp_vroid.server:main"
 vroid-driver-mac = "mcp_vroid.driver.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/nhodges/mcp-vroid"
+Homepage = "https://github.com/wilsontr/mcp-vroid-mac"
+Repository = "https://github.com/wilsontr/mcp-vroid-mac"
+Issues = "https://github.com/wilsontr/mcp-vroid-mac/issues"
+Upstream = "https://github.com/nhodges/mcp-vroid"
 
 [build-system]
 requires = ["hatchling"]

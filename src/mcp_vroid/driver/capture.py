@@ -7,6 +7,7 @@ callers can hand OCR pixel coords straight back to input.click().
 """
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,13 +23,17 @@ def output_scale() -> float:
     return float(mons[0].get("scale", 1.0)) if mons else 1.0
 
 
+_SEQ = re.compile(r"^(\d+)")
+
+
 def next_capture_path(tag: str = "") -> Path:
+    # Parse the whole leading number: slicing three digits wrapped "1000-..."
+    # back to 100 and overwrote older captures.
     n = 0
-    for p in CAPTURES.glob("[0-9][0-9][0-9]*.png"):
-        try:
-            n = max(n, int(p.name[:3]))
-        except ValueError:
-            pass
+    for p in CAPTURES.glob("[0-9]*.png"):
+        m = _SEQ.match(p.name)
+        if m:
+            n = max(n, int(m.group(1)))
     name = f"{n + 1:03d}" + (f"-{tag}" if tag else "") + ".png"
     return CAPTURES / name
 

@@ -374,7 +374,7 @@ def to_wine_path(p: str | Path) -> str:
 def _save_dialog(out_path: Path, timeout: float = 60.0) -> None:
     """Drive the platform's save panel and confirm."""
     if sys.platform == "darwin":
-        _save_dialog_mac(out_path)
+        _save_dialog_mac(out_path, timeout)
     else:
         _save_dialog_wine(out_path, timeout)
 
@@ -431,60 +431,94 @@ def _save_dialog_wine(out_path: Path, timeout: float = 60.0) -> None:
         time.sleep(2.0)
 
 
-def _save_dialog_mac(out_path: Path) -> None:
-    """Drive the macOS save panel that VRoid opens for the export.
+def _panel_shot(panel: dict, tag: str) -> Shot:
+    """Capture exactly what is on screen where the save panel is.
 
-    macOS uses an NSSavePanel (usually a sheet on the VRoid window) rather
-    than Wine's dialog. Set the directory through the panel's "Go to Folder"
-    sheet (Cmd+Shift+G), then type the file name and confirm with Return.
-    If the panel is still up, click its rightmost "Save" button.
+    VRoid is sandboxed, so its save panel is a window of the separate "Open
+    and Save Panel Service" process and does not appear in a
+    `screencapture -l <vroid window>` capture. Grab the screen region instead.
+    """
+    return C.grab_region(panel["x"], panel["y"], panel["w"], panel["h"], tag=tag)
+
+
+def _wait_panel(timeout: float) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        panel = W.panel_window()
+        if panel is not None:
+            return panel
+        time.sleep(0.5)
+    raise RuntimeError(
+        f"the macOS save panel never appeared within {timeout:.0f}s")
+
+
+def _click_in_panel(needle: str, tag: str) -> bool:
+    """Click the rightmost `needle` inside the save panel, if it is up."""
+    panel = W.panel_window()
+    if panel is None:
+        return False
+    s = _panel_shot(panel, tag)
+    hits = L.find_text(s, needle, all_matches=True) or []
+    if not hits:
+        return False
+    button = max(hits, key=lambda h: h.left)
+    I.click(*button.center, space="image", shot=s)
+    return True
+
+
+def _save_dialog_mac(out_path: Path, timeout: float = 60.0) -> None:
+    """Drive the macOS save panel that VRoid opens for an export / Save As.
+
+    Waits for the panel, sets the folder through its "Go to Folder" sheet
+    (Cmd+Shift+G), types the file name, confirms with Return, answers a
+    "Replace?" prompt if the file exists, then waits for the panel to close.
+    Every fallback click is confined to the panel's own window - nothing
+    outside it is ever clicked.
     """
     out = Path(out_path)
-    time.sleep(3.0)  # let the sheet finish animating in
+    _wait_panel(timeout)
+    time.sleep(0.8)  # let the sheet finish animating in
     I.key("cmd+shift+g")
-    time.sleep(0.9)
-    I.type_text(str(out.parent) + "/")
-    time.sleep(0.4)
+    time.sleep(1.0)
+    I.clear_field()
+    I.type_text(str(out.parent))
+    time.sleep(0.6)
     I.key("Return")
     time.sleep(1.2)
-    I.clear_field()
+    I.clear_field()  # the name field has focus again once Go to Folder closes
     I.type_text(out.name)
     time.sleep(0.4)
     I.key("Return")
-    time.sleep(2.0)
-    if out.exists():
-        return
-    s = C.grab_screen("save-dialog-still-open")
-    hits = L.find_text(s, "Save", all_matches=True,
-                       region=(0, 0, s.image.width, int(s.image.height * 0.5)))
-    button = max(hits, key=lambda h: h.left) if hits else None
-    if button is not None:
-        I.click(*button.center, space="image", shot=s)
-        time.sleep(1.5)
+    time.sleep(1.5)
+
+    deadline = time.time() + timeout
+    clicked_save = False
+    while time.time() < deadline:
+        if W.panel_window() is None:
+            return
+        # Overwriting: macOS asks first and its default button is Cancel.
+        if _click_in_panel("Replace", "save-panel-replace"):
+            time.sleep(1.5)
+            continue
+        if not clicked_save and _click_in_panel("Save", "save-panel-save"):
+            clicked_save = True
+            time.sleep(1.5)
+            continue
+        time.sleep(1.0)
+    panel = W.panel_window()
+    if panel is not None:
+        s = _panel_shot(panel, "save-panel-stuck")
+        raise RuntimeError(f"the save panel is still open after {timeout:.0f}s; see {s.path}")
 
 
 def _save_dialog_window():
     """Find a separate save/export panel, if the platform has one.
 
-    Linux/Wine: a top-level window titled Export / Save As / Save. macOS shows
-    these as sheets inside the VRoid window, so this normally returns None -
-    and window titles need Screen Recording permission to read at all.
+    Linux/Wine: a top-level window titled Export / Save As / Save.
+    macOS: the sandboxed app's out-of-process save panel.
     """
     if sys.platform == "darwin":
-        try:
-            import Quartz
-
-            infos = Quartz.CGWindowListCopyWindowInfo(
-                Quartz.kCGWindowListOptionAll, Quartz.kCGNullWindowID) or []
-        except Exception:
-            return None
-        for w in infos:
-            if str(w.get("kCGWindowOwnerName") or "") not in ("VRoid Studio", "VRoidStudio"):
-                continue
-            title = str(w.get("kCGWindowName") or "").strip().lower()
-            if title in ("export", "save as", "save", "export as vrm"):
-                return {"title": title, "id": w.get("kCGWindowNumber")}
-        return None
+        return W.panel_window()
     for c in W.hyprctl_json("clients"):
         if (c.get("title") or "").strip().lower() in ("export", "save as", "save"):
             return c
