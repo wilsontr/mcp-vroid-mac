@@ -37,7 +37,7 @@ implementation is kept in-tree and documented in
 ## Install
 
 ```bash
-git clone <this directory> ~/mcp-vroid-mac
+git clone https://github.com/wilsontr/mcp-vroid-mac ~/mcp-vroid-mac
 cd ~/mcp-vroid-mac
 uv sync
 ```
