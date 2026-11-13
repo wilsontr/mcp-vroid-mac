@@ -21,6 +21,10 @@ Shot = C.Shot
 # different monitor/scale. Measured on 2560x1440 (Hyprland scale 1.25).
 F_CLOSE_X = (0.0090, 0.0160)      # top-left "x" that leaves a full-screen view
 F_EXPORT_ICON = (0.9625, 0.0160)  # share/upload icon in the editor toolbar
+# Empty editor-toolbar strip between the "Look" tab and the camera icon,
+# measured on the macOS 2.16 window (1581x1020 incl. title bar). Clicking it
+# does nothing except deselect a focused text box.
+F_TOOLBAR_BLANK_MAC = (0.63, 0.05)
 F_PARAM_VALUE_X = 0.9785          # x of the numeric box on a Parameters row
 TAB_Y = 0.0160                    # y of the Face/Hairstyle/... tab strip
 
@@ -432,12 +436,32 @@ def _save_dialog_wine(out_path: Path, timeout: float = 60.0) -> None:
 
 
 def _panel_shot(panel: dict, tag: str) -> Shot:
-    """Capture exactly what is on screen where the save panel is.
+    """Capture the save panel's own window, cropped to the panel.
 
-    VRoid is sandboxed, so its save panel is a window of the separate "Open
-    and Save Panel Service" process and does not appear in a
-    `screencapture -l <vroid window>` capture. Grab the screen region instead.
+    Captured by window id (`screencapture -l`), so other apps' windows on
+    top are never read. On VRoid 2.16 that capture comes back as the panel
+    composited onto VRoid's main window, so work out which frame the image
+    matches before cropping. A plain screen-region grab is the last resort.
     """
+    path = C.next_capture_path(tag)
+    try:
+        img, _ = C._capture([C.SCREENCAPTURE, "-x", "-o", "-l", str(panel["id"]),
+                             str(path)], path, 0)
+    except RuntimeError:
+        img = None
+    if img is not None:
+        main = W.find_window()
+        frames = [(panel["x"], panel["y"], panel["w"], panel["h"])]
+        if main is not None:
+            frames.append((main.x, main.y, main.w, main.h))
+        for ox, oy, fw, fh in frames:
+            scale = img.width / fw
+            if fh and abs(img.height / fh - scale) < 0.02:
+                full = Shot(img, path, ox, oy, scale)
+                box = (round((panel["x"] - ox) * scale), round((panel["y"] - oy) * scale),
+                       round((panel["x"] - ox + panel["w"]) * scale),
+                       round((panel["y"] - oy + panel["h"]) * scale))
+                return full.crop(box)
     return C.grab_region(panel["x"], panel["y"], panel["w"], panel["h"], tag=tag)
 
 
@@ -452,17 +476,26 @@ def _wait_panel(timeout: float) -> dict:
         f"the macOS save panel never appeared within {timeout:.0f}s")
 
 
-def _click_in_panel(needle: str, tag: str) -> bool:
-    """Click the rightmost `needle` inside the save panel, if it is up."""
-    panel = W.panel_window()
-    if panel is None:
+def _answer_replace(panel: dict) -> bool:
+    """Click Replace if the "already exists - replace it?" alert is up.
+
+    The red Replace label is lost by OCR, and the needle "replace" also
+    matches the alert's question text (clicking that selects the text and
+    swallows Return). So find the alert's Cancel button - white text, read
+    reliably - and click its mirror: the alert is centred in the panel and
+    its two buttons are symmetric about that centre.
+    """
+    s = _panel_shot(panel, "save-panel-check")
+    msg = L.find_text(s, "exists")
+    if msg is None:
         return False
-    s = _panel_shot(panel, tag)
-    hits = L.find_text(s, needle, all_matches=True) or []
-    if not hits:
-        return False
-    button = max(hits, key=lambda h: h.left)
-    I.click(*button.center, space="image", shot=s)
+    cancels = [h for h in (L.find_text(s, "Cancel", all_matches=True) or [])
+               if h.center[1] > msg.center[1]]
+    if not cancels:
+        raise RuntimeError(
+            f"save panel shows a replace prompt but its buttons were not found; see {s.path}")
+    cancel = min(cancels, key=lambda h: h.center[1])   # the alert's, not the panel's
+    I.click(s.image.width - cancel.center[0], cancel.center[1], space="image", shot=s)
     return True
 
 
@@ -472,12 +505,12 @@ def _save_dialog_mac(out_path: Path, timeout: float = 60.0) -> None:
     Waits for the panel, sets the folder through its "Go to Folder" sheet
     (Cmd+Shift+G), types the file name, confirms with Return, answers a
     "Replace?" prompt if the file exists, then waits for the panel to close.
-    Every fallback click is confined to the panel's own window - nothing
-    outside it is ever clicked.
+    The only click is on the replace alert, located inside the panel's own
+    window capture.
     """
     out = Path(out_path)
     _wait_panel(timeout)
-    time.sleep(0.8)  # let the sheet finish animating in
+    time.sleep(0.8)  # let the panel finish animating in
     I.key("cmd+shift+g")
     time.sleep(1.0)
     I.clear_field()
@@ -486,25 +519,31 @@ def _save_dialog_mac(out_path: Path, timeout: float = 60.0) -> None:
     I.key("Return")
     time.sleep(1.2)
     I.clear_field()  # the name field has focus again once Go to Folder closes
-    I.type_text(out.name)
+    # The panel appends its own extension (.vroid / .vrm). Typing it too gave
+    # "name.vroid.vroid" live on VRoid 2.16, so type the stem.
+    I.type_text(out.stem if out.suffix.lower() in (".vroid", ".vrm") else out.name)
     time.sleep(0.4)
     I.key("Return")
     time.sleep(1.5)
 
-    deadline = time.time() + timeout
-    clicked_save = False
+    started = time.time()
+    deadline = started + timeout
+    replaced = retried = False
     while time.time() < deadline:
-        if W.panel_window() is None:
+        panel = W.panel_window()
+        if panel is None:
             return
-        # Overwriting: macOS asks first and its default button is Cancel.
-        if _click_in_panel("Replace", "save-panel-replace"):
+        if not replaced and _answer_replace(panel):
+            replaced = True
             time.sleep(1.5)
             continue
-        if not clicked_save and _click_in_panel("Save", "save-panel-save"):
-            clicked_save = True
-            time.sleep(1.5)
-            continue
-        time.sleep(1.0)
+        if not retried and not replaced and time.time() - started > 5.0:
+            # Still open, no prompt after 5 s: the first Return was probably
+            # eaten while the file list loaded. Never send this while the
+            # replace alert may be up - Return does not pick Replace there.
+            I.key("Return")
+            retried = True
+        time.sleep(1.5)
     panel = W.panel_window()
     if panel is not None:
         s = _panel_shot(panel, "save-panel-stuck")
@@ -515,7 +554,7 @@ def _save_dialog_window():
     """Find a separate save/export panel, if the platform has one.
 
     Linux/Wine: a top-level window titled Export / Save As / Save.
-    macOS: the sandboxed app's out-of-process save panel.
+    macOS: VRoid's separate "Save" panel window.
     """
     if sys.platform == "darwin":
         return W.panel_window()
@@ -788,6 +827,15 @@ def save_project_as(out_path: str | Path, timeout: float = 60.0) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     I.hotkey("ctrl+shift+s")
     time.sleep(1.5)
+    if sys.platform == "darwin" and W.panel_window() is None:
+        # Seen live on VRoid 2.16: the shortcut is ignored while a parameter
+        # text box is still selected - even after Escape or Return. A click on
+        # an inert spot deselects it; then try once more.
+        s = shot("saveas-deselect")
+        _click_frac(s, *F_TOOLBAR_BLANK_MAC)
+        time.sleep(0.4)
+        I.hotkey("ctrl+shift+s")
+        time.sleep(1.5)
     _save_dialog(out_path, timeout=timeout)
     deadline = time.time() + timeout
     while time.time() < deadline:

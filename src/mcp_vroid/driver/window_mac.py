@@ -8,10 +8,10 @@ CGWindowID used by `screencapture -l`.
 There are no workspaces on macOS, so the workspace helpers are no-ops kept for
 API compatibility with `server.py` / `actions.py`.
 
-VRoid Studio for macOS is sandboxed, so its save/open panels are drawn by a
-separate process ("Open and Save Panel Service"). Those windows count as
-VRoid's own for focus and occlusion checks, and they are NOT part of a
-`screencapture -l <vroid window>` capture - see `panel_window()`.
+VRoid Studio for macOS is sandboxed. Its save panel shows up as a separate
+VRoid-owned window titled "Save" (contents rendered by the "Open and Save
+Panel Service" process). Windows of either owner count as VRoid's for focus
+and occlusion checks; see `panel_window()` for finding the panel.
 """
 from __future__ import annotations
 
@@ -195,14 +195,24 @@ def find_window() -> Window | None:
 
 
 def panel_window() -> dict | None:
-    """The visible save/open panel of a sandboxed VRoid, if one is up.
+    """The visible save/open panel, if one is up.
 
-    Returns {"x","y","w","h","owner","id"} in screen points, or None.
+    In VRoid 2.16 the panel is a separate VRoid-owned window titled "Save"
+    (its contents are rendered by the panel service, but the window belongs
+    to VRoid). Match any visible VRoid or panel-service window other than the
+    main editor window. Returns {"x","y","w","h","owner","id","title"} in
+    screen points, or None.
     """
+    main = find_window()
+    main_id = main.window_id if main is not None else None
     best = None
     for w in _windows(onscreen_only=True):
         owner = str(w.get("kCGWindowOwnerName") or "")
-        if owner not in PANEL_OWNERS:
+        if owner not in OWNER_NAMES + PANEL_OWNERS:
+            continue
+        if w.get("kCGWindowNumber") == main_id:
+            continue
+        if int(w.get("kCGWindowLayer") or 0) != 0:
             continue
         if float(w.get("kCGWindowAlpha") or 0) <= 0:
             continue
@@ -211,6 +221,7 @@ def panel_window() -> dict | None:
             continue
         if best is None or ww * hh > best["w"] * best["h"]:
             best = {"x": x, "y": y, "w": ww, "h": hh, "owner": owner,
+                    "title": str(w.get("kCGWindowName") or ""),
                     "id": w.get("kCGWindowNumber")}
     return best
 

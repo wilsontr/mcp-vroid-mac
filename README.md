@@ -164,9 +164,11 @@ macOS app here is **2.16.0**, so some flows may need re-measuring:
 - The fractional anchors were measured on a borderless fullscreen window.
   The macOS window has a title bar and any size, so expect the anchor-based
   flows above to miss until they are re-measured on macOS.
-- VRoid for macOS is sandboxed: its save panel belongs to a separate process
-  and never shows in a window capture. Use `vroid_screenshot(whole_screen=true)`
-  to see it.
+- The save panel is a separate floating window (titled "Save"), so a plain
+  window capture does not show it. Use `vroid_screenshot(whole_screen=true)`
+  to see it. The save flows find and capture it themselves.
+- ⌘S / ⌘⇧S are ignored while a parameter value box is still selected, even
+  after Return. Click somewhere inert first (Save As does this itself).
 - Clicks, drags and scrolls refuse when another window (an always-on-top
   panel, another app) covers the target point; move it out of the way.
 - Keys: `ctrl`/`cmd` both mean ⌘, `Control_L` is the real Control key,

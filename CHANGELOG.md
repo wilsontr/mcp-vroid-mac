@@ -28,9 +28,14 @@ follow [semantic versioning](https://semver.org/).
   typed characters.
 * Minimised / off-Space windows no longer count as the VRoid window.
 * `vroid_launch(restart=true)` force-quits if a polite quit stalls.
-* The macOS save panel (out-of-process, because VRoid is sandboxed) is
-  awaited, captured by screen region, answers "Replace?", and is only ever
-  clicked inside its own window.
+* The macOS save panel (a separate VRoid-owned "Save" window) is detected,
+  captured by its window id, and driven by keyboard. The file name is typed
+  without its extension, because the panel adds `.vroid`/`.vrm` itself (typing it
+  produced `name.vroid.vroid`). A "Replace?" prompt is answered by clicking
+  Replace, which is located by mirroring the alert's Cancel button. Verified
+  live on VRoid 2.16.0.
+* Save As works when a parameter text box still has focus: VRoid ignores the
+  shortcut then, so it clicks an empty toolbar strip and retries.
 * `whole_screen` captures the display VRoid is on, not always the main one.
 * Capture numbering past 999 no longer wraps and overwrites old captures.
 

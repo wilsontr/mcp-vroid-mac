@@ -339,9 +339,9 @@ async def vroid_screenshot(
         bool,
         Field(description="Capture the whole output instead of just the VRoid "
                           "window - needed to see a save/export panel: "
-                          "Wine draws it as a separate window, and the "
-                          "sandboxed macOS app's panel comes from another "
-                          "process, so a window capture never shows it."),
+                          "Wine and macOS both draw it as a separate "
+                          "window, so a capture of the VRoid window "
+                          "alone does not show it."),
     ] = False,
     full_resolution: Annotated[
         bool,
