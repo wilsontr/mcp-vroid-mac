@@ -1,17 +1,20 @@
 """Where the driver reads its helper binary and writes its artifacts.
 
-Unlike the original spike (which kept everything next to the source tree),
-an installed package must not scribble into site-packages, so every location
-is overridable by environment variable and defaults to XDG state.
+Every location is overridable by environment variable. The default state home
+is platform-specific:
 
-    MCP_VROID_CAPTURES  screenshots       default $XDG_STATE_HOME/mcp-vroid/captures
-    MCP_VROID_OUT       exported files    default $XDG_STATE_HOME/mcp-vroid/out
-    MCP_VROID_VPOINTER  the vpointer bin  default <repo>/native/vpointer, then $PATH
+    macOS   ~/Library/Application Support/mcp-vroid/…
+    Linux   $XDG_STATE_HOME/mcp-vroid/…  (defaults to ~/.local/state)
+
+    MCP_VROID_CAPTURES  screenshots
+    MCP_VROID_OUT       exported files
+    MCP_VROID_VPOINTER  the vpointer bin (Linux only)
 """
 from __future__ import annotations
 
 import os
 import shutil
+import sys
 from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parent.parent      # .../mcp_vroid
@@ -19,6 +22,8 @@ REPO = PACKAGE.parent.parent                          # .../<checkout>  (src lay
 
 
 def _state_home() -> Path:
+    if sys.platform == "darwin":
+        return Path.home() / "Library/Application Support"
     return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
 
 
@@ -33,6 +38,7 @@ OUT = _dir("MCP_VROID_OUT", _state_home() / "mcp-vroid/out")
 
 
 def _find_vpointer() -> Path:
+    """Locate the Linux virtual-pointer helper. Unused on macOS."""
     env = os.environ.get("MCP_VROID_VPOINTER")
     if env:
         return Path(env).expanduser()

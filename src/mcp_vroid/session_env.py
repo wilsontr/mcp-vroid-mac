@@ -15,6 +15,7 @@ full session env changes nothing here.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 
@@ -35,6 +36,12 @@ def _newest(paths: list[Path]) -> Path | None:
 
 def ensure_session_env() -> dict[str, str]:
     """Fill in the missing session variables; returns what this call set."""
+    if sys.platform == "darwin":
+        # macOS needs none of this: Quartz talks to the WindowServer directly
+        # and `screencapture` / `osascript` work from any process that holds
+        # the relevant TCC permission.
+        return {}
+
     filled: dict[str, str] = {}
     rd = _runtime_dir()
 

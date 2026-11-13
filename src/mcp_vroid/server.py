@@ -1,9 +1,9 @@
-"""MCP server (stdio) that drives VRoid Studio's GUI on Hyprland/Wayland.
+"""MCP server (stdio) that drives VRoid Studio's GUI on macOS.
 
 Every tool is a thin, well-described wrapper over `mcp_vroid.driver`, which
-does the actual see -> locate -> act loop: `grim` screenshots, tesseract OCR
-and cv2 blob/template matching to find widgets, a `zwlr_virtual_pointer_v1`
-client for the mouse and X11 XTEST for keys and the wheel.
+does the actual see -> locate -> act loop: `screencapture` for the window,
+tesseract OCR and cv2 blob/template matching to find widgets, and Quartz
+CGEvent for the mouse and keyboard.
 
 Design notes for anyone reading the tool list:
 
@@ -11,10 +11,14 @@ Design notes for anyone reading the tool list:
   default (`space="image"`), which is exactly what `vroid_screenshot`,
   `vroid_find_text` and `vroid_find_button` hand back. Do not convert
   anything yourself.
-* Nothing types or clicks unless VRoid Studio is the focused window; the
+* Nothing types or clicks unless VRoid Studio is the focused application; the
   guard lives in the driver and every acting tool re-checks it.
-* The server parks VRoid on its own Hyprland workspace (9) and remembers the
-  workspace the user was on, so `vroid_release` can put them back.
+* macOS needs two TCC permissions for the process hosting this server:
+  **Screen Recording** (captures) and **Accessibility** (input). `vroid_status`
+  reports both, and the acting tools refuse with instructions when they are
+  missing.
+* There are no workspaces on macOS; the workspace helpers are no-ops kept for
+  API compatibility, so `vroid_release` simply reports that nothing moved.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ import functools
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -38,19 +43,19 @@ from .session_env import ensure_session_env
 _FILLED_ENV = ensure_session_env()
 
 from .driver import actions as A  # noqa: E402
-from .driver import capture as C  # noqa: E402
-from .driver import input as I  # noqa: E402
 from .driver import locate as L  # noqa: E402
-from .driver import window as W  # noqa: E402
-from .driver.paths import CAPTURES, OUT, VPOINTER  # noqa: E402
+from .driver.backend import capture as C  # noqa: E402
+from .driver.backend import input as I  # noqa: E402
+from .driver.backend import window as W  # noqa: E402
+from .driver.paths import CAPTURES, OUT  # noqa: E402
 
 server = MCPServer(
     name="vroid",
     version="0.1.0",
     instructions=(
-        "Drives the VRoid Studio desktop app (Steam/Proton) on Hyprland by "
-        "screenshotting it, locating widgets with OCR, and injecting real "
-        "pointer/keyboard events.\n\n"
+        "Drives the native macOS VRoid Studio app by screenshotting its "
+        "window, locating widgets with OCR, and injecting real pointer and "
+        "keyboard events with Quartz.\n\n"
         "The working loop is: vroid_launch -> vroid_screenshot (LOOK at the "
         "image) -> vroid_find_text / vroid_find_button to get coordinates -> "
         "vroid_click / vroid_type -> vroid_screenshot again to confirm. Never "
@@ -83,21 +88,18 @@ def _require_window() -> W.Window:
     win = W.find_window()
     if win is None:
         raise RuntimeError(
-            "VRoid Studio is not running (no Hyprland window with class "
-            "steam_app_1486350 / title 'VRoid Studio ...'). Call vroid_launch "
-            "first."
+            "VRoid Studio is not running (no macOS window owned by 'VRoid "
+            "Studio'). Call vroid_launch first."
         )
     return win
 
 
 def _ensure_ready() -> W.Window:
-    """Focus VRoid the way the driver expects before any input is injected.
+    """Focus VRoid before any input is injected.
 
-    Parks the window on workspace 9, remembers the workspace the user was on
-    (once, so vroid_release can restore it), switches there, focuses and
-    fullscreens so window geometry is stable, and closes an idle screensaver
-    overlay if one grabbed the session. Raises if VRoid is not running or
-    cannot be focused - it never types into somebody else's window.
+    Brings the app to the front (the workspace helpers are no-ops on macOS)
+    and raises if VRoid is not running or cannot be focused - it never types
+    into somebody else's application.
     """
     global _prev_workspace
     win = _require_window()
@@ -182,25 +184,26 @@ async def vroid_launch(
         float, Field(description="Seconds to wait for the window to appear.")
     ] = 240.0,
 ) -> dict[str, Any]:
-    """Start VRoid Studio (Steam appid 1486350, Proton) and take control of it.
+    """Start the native macOS VRoid Studio app and take control of it.
 
     Idempotent: if the window already exists it is reused, not relaunched.
-    Then the window is parked on Hyprland workspace 9, the workspace the user
-    was on is remembered (vroid_release puts them back), and the window is
-    focused and fullscreened so its geometry - and therefore every coordinate
-    you will read off a screenshot - is stable.
+    The app is brought to the front; its window geometry is stable, so every
+    coordinate you read off a screenshot stays valid until the window moves.
 
-    Cold start over Proton takes 30-90 s; the call blocks until the window is
-    up. It does NOT wait for the start screen to finish drawing, so take a
+    Cold start takes 10-30 s; the call blocks until the window is up. It does
+    NOT wait for the start screen to finish drawing, so take a
     vroid_screenshot and look before clicking anything.
     """
 
     def work() -> dict[str, Any]:
         global _prev_workspace
         if restart and W.find_window():
-            subprocess.run(["pkill", "-f", "VRoidStudio.exe"],
-                           capture_output=True)
-            time.sleep(5)
+            subprocess.run(
+                ["osascript", "-e",
+                 'tell application id "net.pixiv.vroid.macosx" to quit'],
+                capture_output=True,
+            )
+            time.sleep(4)
         win, prev = W.prepare(timeout)
         if _prev_workspace is None and prev != W.WORKSPACE:
             _prev_workspace = prev
@@ -224,12 +227,36 @@ async def vroid_status() -> dict[str, Any]:
     every acting tool will refuse until vroid_launch (or any acting tool's own
     focus step) takes the window back.
 
-    Also reports whether the external helpers this server needs are present:
-    the vpointer binary (built by native/build.sh), grim, tesseract, hyprctl.
+    Also reports the platform helpers the driver needs. On macOS: Screen
+    Recording (`screencapture`) and Accessibility (Quartz input), with
+    `permissions_hint` naming the System Settings pane to open. On Linux:
+    `vpointer`, `grim`, `hyprctl` and `tesseract`.
     """
 
     def work() -> dict[str, Any]:
         win = W.find_window()
+        darwin = sys.platform == "darwin"
+        screen_ok = C.screen_recording_ok() if darwin else True
+        ax_ok = I.accessibility_ok() if darwin else True
+        if darwin:
+            helpers: dict[str, Any] = {
+                "screencapture": {
+                    "path": C.SCREENCAPTURE,
+                    "present": Path(C.SCREENCAPTURE).exists(),
+                },
+                "tesseract": bool(shutil.which("tesseract")),
+                "screen_recording": screen_ok,
+                "accessibility": ax_ok,
+            }
+        else:
+            from .driver.paths import VPOINTER
+
+            helpers = {
+                "vpointer": {"path": str(VPOINTER), "present": VPOINTER.exists()},
+                "grim": bool(shutil.which("grim")),
+                "tesseract": bool(shutil.which("tesseract")),
+                "hyprctl": bool(shutil.which("hyprctl")),
+            }
         out: dict[str, Any] = {
             "window": _win_dict(win),
             "focused": W.is_vroid_focused(),
@@ -239,13 +266,20 @@ async def vroid_status() -> dict[str, Any]:
             "captures_dir": str(CAPTURES),
             "out_dir": str(OUT),
             "recovered_session_env": _FILLED_ENV,
-            "helpers": {
-                "vpointer": {"path": str(VPOINTER), "present": VPOINTER.exists()},
-                "grim": bool(shutil.which("grim")),
-                "tesseract": bool(shutil.which("tesseract")),
-                "hyprctl": bool(shutil.which("hyprctl")),
-            },
+            "helpers": helpers,
         }
+        if darwin and not screen_ok:
+            out["permissions_hint"] = (
+                "Screen Recording is off: grant it to the app hosting this MCP "
+                "server in System Settings > Privacy & Security > Screen & "
+                "System Audio Recording, then restart the server."
+            )
+        elif darwin and not ax_ok:
+            out["permissions_hint"] = (
+                "Accessibility is off: grant it to the app hosting this MCP "
+                "server in System Settings > Privacy & Security > Accessibility, "
+                "then restart the server."
+            )
         if win is not None:
             try:
                 out["capture_scale"] = C.output_scale()
@@ -258,10 +292,10 @@ async def vroid_status() -> dict[str, Any]:
 
 @server.tool()
 async def vroid_release() -> dict[str, Any]:
-    """Hand the desktop back: switch to the workspace the user was on before.
+    """Hand the desktop back.
 
-    Leaves VRoid running on workspace 9. Call this when you are done with a
-    session, or before handing control back to the human.
+    macOS has no workspaces, so this only reports that nothing was moved;
+    VRoid keeps running. Call it when you are done with a session.
     """
 
     def work() -> dict[str, Any]:
@@ -294,8 +328,9 @@ async def vroid_screenshot(
     whole_screen: Annotated[
         bool,
         Field(description="Capture the whole output instead of just the VRoid "
-                          "window - needed for the Wine save/export dialog, "
-                          "which is a separate window."),
+                          "window - needed when a save/export panel is a "
+                          "separate window (Linux/Wine) rather than a macOS "
+                          "sheet."),
     ] = False,
     full_resolution: Annotated[
         bool,
@@ -475,8 +510,8 @@ async def vroid_find_button(
 SPACE_DOC = (
     "'image' = pixels of a window capture (what vroid_screenshot / "
     "vroid_find_* report - the default, and almost always what you want); "
-    "'window' = Hyprland layout units relative to the window's top-left; "
-    "'layout' = absolute Hyprland layout units of the whole output."
+    "'window' = screen points relative to the window's top-left; "
+    "'layout' = absolute screen points of the whole display."
 )
 
 
@@ -500,11 +535,11 @@ async def vroid_click(
         bool, Field(description="Send two clicks (selects a word in a text box).")
     ] = False,
 ) -> dict[str, Any]:
-    """Click a point in the VRoid window with the real compositor cursor.
+    """Click a point in the VRoid window with the real cursor.
 
-    Refuses unless VRoid Studio is the focused window; it focuses the window
-    itself first (workspace 9, fullscreen) and raises rather than clicking
-    into somebody else's app.
+    Refuses unless VRoid Studio is the focused application; it focuses the
+    window itself first and raises rather than clicking into somebody else's
+    app.
 
     The pointer glides to the target in a few steps so hover states fire, then
     clicks and settles ~0.35 s. Coordinates must come from a CURRENT capture -
@@ -585,9 +620,8 @@ async def vroid_scroll(
 ) -> dict[str, Any]:
     """Wheel-scroll a panel or zoom the 3D viewport.
 
-    Sent as X11 button 4/5 (6/7 horizontally): VRoid is an XWayland client and
-    ignores Wayland virtual-pointer axis events, so this is the only wheel
-    that works on it.
+    Sent as native scroll events: Quartz on macOS, X11 buttons 4/5 on Linux
+    (where VRoid is an XWayland client and ignores Wayland axis events).
 
     Long Parameters lists need this - a label that vroid_find_text cannot see
     is usually just below the fold. vroid_set_slider scrolls to its own row
@@ -622,9 +656,8 @@ async def vroid_type(
     """Type into whatever widget currently has keyboard focus.
 
     Click the field first (vroid_click) - this tool has no idea where the
-    caret is. Keystrokes go through X11 XTEST because the Wayland virtual
-    keyboard is mis-read by this Proton client (a whole string arrives as a
-    single character).
+    caret is. Keystrokes go through the platform input backend: Quartz on
+    macOS, XTEST on Linux.
 
     Always screenshot afterwards to confirm the text landed in the field you
     meant: VRoid's forms have several boxes with near-identical captions, and
@@ -655,9 +688,9 @@ async def vroid_key(
 ) -> dict[str, Any]:
     """Press a key combination in the focused VRoid widget.
 
-    Useful ones: Return confirms a value box or a Wine dialog's default
-    button; ctrl+s saves the project; ctrl+shift+s is Save As; ctrl+z/ctrl+y
-    undo/redo in the editor.
+    Useful ones: Return confirms a value box or a dialog's default button;
+    ctrl+s saves the project (⌘ on macOS); ctrl+shift+s is Save As;
+    ctrl+z/ctrl+y undo/redo in the editor.
 
     Note Escape does NOT close VRoid's hamburger menu - click elsewhere to
     dismiss it.
@@ -811,9 +844,10 @@ async def vroid_current_screen() -> dict[str, Any]:
 async def vroid_export_vrm(
     path: Annotated[
         str,
-        Field(description="Where to write the .vrm, as a normal Linux path. "
-                          "Translated to the Proton prefix's Z:\\ mapping for "
-                          "the Wine save dialog."),
+        Field(description="Where to write the .vrm, as a normal filesystem "
+                          "path. On Linux it is translated to the Proton "
+                          "prefix's Z:\\ mapping; on macOS the native save "
+                          "panel is used."),
     ],
     avatar_name: Annotated[
         str,
@@ -839,9 +873,9 @@ async def vroid_export_vrm(
 
     Editor toolbar share icon -> 'Export as VRM' -> the blue Export pill ->
     the VRM Settings modal (fills Avatar Name and Creators, picks the export
-    format, scrolls to the bottom and clicks Export) -> Wine's save dialog
-    (types a Z:\\ path and presses Return) -> waits for the file size to stop
-    growing.
+    format, scrolls to the bottom and clicks Export) -> the save panel
+    (Wine: a Z:\\ path and Return; macOS: ⌘⇧G to the folder, then the file
+    name) -> waits for the file size to stop growing.
 
     Must be started from the EDITOR screen with a model loaded. Takes 30 s to
     a few minutes depending on the model. Returns the written path and its
@@ -871,8 +905,8 @@ async def vroid_save_project(
         str | None,
         Field(description="Save As target: a bare name (written into the "
                           "server's out dir as <name>.vroid) or an absolute "
-                          "Linux path. Omit to do a plain Save, which "
-                          "silently overwrites the project's existing file."),
+                          "path. Omit to do a plain Save, which silently "
+                          "overwrites the project's existing file."),
     ] = None,
     timeout: Annotated[
         float, Field(description="Seconds to wait for the file to be written.")
@@ -880,11 +914,11 @@ async def vroid_save_project(
 ) -> dict[str, Any]:
     """Save the .vroid project - plain Save, or Save As to an explicit path.
 
-    With `name`: presses Ctrl+Shift+S and drives Wine's save dialog the same
-    way the VRM export does, then waits for the file. Without `name`: opens
-    the hamburger menu and clicks Save, which overwrites the project's
-    existing file and opens the Wine dialog only if the project has never
-    been saved (in that case call this again WITH a name).
+    With `name`: presses Ctrl+Shift+S (⌘⇧S on macOS) and drives the save
+    panel the same way the VRM export does, then waits for the file. Without
+    `name`: opens the hamburger menu and clicks Save, which overwrites the
+    project's existing file and opens a save panel only if the project has
+    never been saved (in that case call this again WITH a name).
 
     Worth doing before any risky experiment: nothing else in this server
     persists your work, and vroid_launch(restart=true) discards it.
@@ -902,7 +936,7 @@ async def vroid_save_project(
         A.save_project()
         return {"saved": None, "mode": "save",
                 "note": "plain Save; if this project had never been saved a "
-                        "Wine dialog is now open - screenshot with "
+                        "save panel may now be open - screenshot with "
                         "whole_screen=true and check."}
 
     return await _blocking(work)

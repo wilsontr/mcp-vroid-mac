@@ -5,15 +5,17 @@ screenshot says. Callers get the Shot back so they can Read the PNG.
 """
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 
-from . import capture as C
-from . import input as I
 from . import locate as L
-from . import window as W
-from .capture import Shot
+from .backend import capture as C
+from .backend import input as I
+from .backend import window as W
 from .paths import OUT
+
+Shot = C.Shot
 
 # Anchors expressed as fractions of the captured window, so they survive a
 # different monitor/scale. Measured on 2560x1440 (Hyprland scale 1.25).
@@ -238,7 +240,8 @@ def export_vrm(out_path: str | Path, avatar_name: str = "SpikeAvatar",
     """Walk the whole Export-as-VRM flow and return the written file.
 
     Editor toolbar -> "Export as VRM" -> Export -> VRM Settings (metadata,
-    required fields) -> Export -> Wine save dialog (type a Z:\\ path) -> Save.
+    required fields) -> Export -> save panel (Wine: Z:\\ path; macOS: ⌘⇧G then
+    the file name) -> Save.
     """
     out_path = Path(out_path).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -369,6 +372,14 @@ def to_wine_path(p: str | Path) -> str:
 
 
 def _save_dialog(out_path: Path, timeout: float = 60.0) -> None:
+    """Drive the platform's save panel and confirm."""
+    if sys.platform == "darwin":
+        _save_dialog_mac(out_path)
+    else:
+        _save_dialog_wine(out_path, timeout)
+
+
+def _save_dialog_wine(out_path: Path, timeout: float = 60.0) -> None:
     """Type the Windows path into Wine's Save dialog and confirm.
 
     The dialog opens with the file-name field focused and its text selected,
@@ -420,7 +431,60 @@ def _save_dialog(out_path: Path, timeout: float = 60.0) -> None:
         time.sleep(2.0)
 
 
+def _save_dialog_mac(out_path: Path) -> None:
+    """Drive the macOS save panel that VRoid opens for the export.
+
+    macOS uses an NSSavePanel (usually a sheet on the VRoid window) rather
+    than Wine's dialog. Set the directory through the panel's "Go to Folder"
+    sheet (Cmd+Shift+G), then type the file name and confirm with Return.
+    If the panel is still up, click its rightmost "Save" button.
+    """
+    out = Path(out_path)
+    time.sleep(3.0)  # let the sheet finish animating in
+    I.key("cmd+shift+g")
+    time.sleep(0.9)
+    I.type_text(str(out.parent) + "/")
+    time.sleep(0.4)
+    I.key("Return")
+    time.sleep(1.2)
+    I.clear_field()
+    I.type_text(out.name)
+    time.sleep(0.4)
+    I.key("Return")
+    time.sleep(2.0)
+    if out.exists():
+        return
+    s = C.grab_screen("save-dialog-still-open")
+    hits = L.find_text(s, "Save", all_matches=True,
+                       region=(0, 0, s.image.width, int(s.image.height * 0.5)))
+    button = max(hits, key=lambda h: h.left) if hits else None
+    if button is not None:
+        I.click(*button.center, space="image", shot=s)
+        time.sleep(1.5)
+
+
 def _save_dialog_window():
+    """Find a separate save/export panel, if the platform has one.
+
+    Linux/Wine: a top-level window titled Export / Save As / Save. macOS shows
+    these as sheets inside the VRoid window, so this normally returns None -
+    and window titles need Screen Recording permission to read at all.
+    """
+    if sys.platform == "darwin":
+        try:
+            import Quartz
+
+            infos = Quartz.CGWindowListCopyWindowInfo(
+                Quartz.kCGWindowListOptionAll, Quartz.kCGNullWindowID) or []
+        except Exception:
+            return None
+        for w in infos:
+            if str(w.get("kCGWindowOwnerName") or "") not in ("VRoid Studio", "VRoidStudio"):
+                continue
+            title = str(w.get("kCGWindowName") or "").strip().lower()
+            if title in ("export", "save as", "save", "export as vrm"):
+                return {"title": title, "id": w.get("kCGWindowNumber")}
+        return None
     for c in W.hyprctl_json("clients"):
         if (c.get("title") or "").strip().lower() in ("export", "save as", "save"):
             return c
@@ -678,11 +742,11 @@ def select_none_preset() -> Shot:
 
 
 def save_project_as(out_path: str | Path, timeout: float = 60.0) -> Path:
-    """Save As (Ctrl+Shift+S) into an explicit .vroid path via the Wine dialog.
+    """Save As (Ctrl+Shift+S, ⌘⇧S on macOS) into an explicit .vroid path.
 
-    Same dialog as the VRM export, so the same rules apply: the file-name
-    field opens focused with its contents selected, a Windows path (Z:\\...)
-    goes straight in, and Return fires the default button.
+    Drives the same save panel as the VRM export: Wine takes a Windows path
+    (Z:\\...) straight into the focused file-name field; macOS gets the native
+    panel (⌘⇧G to the folder, then the file name).
     """
     out_path = Path(out_path).resolve()
     if out_path.suffix.lower() != ".vroid":
@@ -705,7 +769,7 @@ def save_project_as(out_path: str | Path, timeout: float = 60.0) -> Path:
 
 def save_project() -> None:
     """Hamburger -> Save. Silent overwrite when the project already has a
-    file; the first ever save instead opens the Wine dialog (drive it like
+    file; the first ever save instead opens a save panel (drive it like
     export_vrm does)."""
     s = shot()
     I.click(int(29 * s.image.width / 2560), int(23 * s.image.height / 1440),

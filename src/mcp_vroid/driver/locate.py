@@ -10,7 +10,9 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageOps
 
-from .capture import Shot
+from .backend import capture as _capture
+
+Shot = _capture.Shot
 
 
 @dataclass

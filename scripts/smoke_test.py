@@ -10,6 +10,7 @@ clicks, no keys.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -24,6 +25,7 @@ async def main(screenshot: bool) -> int:
         command=sys.executable,
         args=["-m", "mcp_vroid"],
         cwd=str(REPO),
+        env=dict(os.environ),
     )
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
