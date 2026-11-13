@@ -14,3 +14,11 @@ native/wlr-virtual-pointer-unstable-v1-protocol.c
 # runtime output
 captures/
 out/
+
+# macOS
+.DS_Store
+
+# runtime output (capture/out dirs created by the macOS backend)
+.captures/
+.out/
+*.log

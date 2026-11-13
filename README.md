@@ -1,85 +1,89 @@
-# mcp-vroid
+# mcp-vroid-mac
 
-**Drive VRoid Studio from any MCP client, on Linux/Wayland.** Launch the app,
-look at it, find widgets in the picture, click and type, set parameters, and
-export a `.vrm` — all as MCP tools.
+Drive the **native macOS VRoid Studio** from any MCP client: screenshot the
+window, locate widgets with OCR, and inject real pointer/keyboard events with
+Quartz. No Wine, no plugins, no Linux.
 
-## Why
+This is a **downstream macOS port** of
+[mcp-vroid](https://github.com/nhodges/mcp-vroid) by Nuri Hodges (MIT). The
+VRoid-specific logic — OCR locating, the UI map, the parameter/colour/export
+flows — is reused; the platform layer is selected behind
+[`driver/backend.py`](src/mcp_vroid/driver/backend.py). The Linux/Hyprland
+implementation is kept in-tree and documented in
+[`README.upstream.md`](README.upstream.md).
 
-VRoid Studio has no scripting API, no CLI, no plugin surface. The only way in
-is the one a person uses: look at the window and move the mouse. So that is
-what this does — screenshot the window with `grim`, locate things with OCR and
-colour matching, and inject real pointer and keyboard events at the compositor
-level. The MCP client's model is the eyes; these tools are the hands.
-
-```
-   grim ──► PNG ──► tesseract / cv2 ──► (x, y) ──► virtual pointer / XTEST
-    ▲                                                        │
-    └────────────────────  screenshot again  ◄───────────────┘
-```
-
-## Demo
-
-Everything below was done by an MCP client calling these tools — no human at
-the mouse.
-
-Setting body parameters by typing exact values into the Parameters panel
-(`vroid_open_tab("Body")` → `vroid_set_slider("Head Size", -0.15)`):
-
-![The VRoid editor's Body tab, driven: parameters panel with typed values](docs/editor-parameters.png)
-
-Inside the hair editor, tuning procedural hair guides (`vroid_click` on the
-group, `vroid_set_slider` on Height / Interval / Twist Intensity):
-
-![The VRoid hair editor with a procedural hair group selected and its parameters open](docs/hair-editor.png)
-
-Filling the VRM Settings modal on the way to an export (`vroid_export_vrm`
-walks the whole flow, including Wine's save dialog):
-
-![The Export as VRM screen with the VRM Settings modal, required fields being typed](docs/export-vrm.png)
+| Piece | Upstream (Linux) | This port (macOS) |
+| --- | --- | --- |
+| window | `hyprctl` | `CGWindowListCopyWindowInfo` + `NSRunningApplication` |
+| capture | `grim` | `screencapture -l <CGWindowID>` |
+| input | wlroots virtual pointer + XTEST | Quartz `CGEvent` |
+| keyboard | XTEST keysyms | `CGEventCreateKeyboardEvent` / Unicode events |
+| OCR | tesseract | tesseract (unchanged) |
+| workspaces | Hyprland workspace 9 | none (no-ops) |
 
 ## Requirements
 
-Developed and tested on **Arch Linux + Hyprland**, with VRoid Studio 2.14.0
-(English UI) running under **Steam/Proton**. What is actually load-bearing:
+- macOS with the native VRoid Studio app (`/Applications/VRoidStudio.app`,
+  bundle id `net.pixiv.vroid.macosx`).
+- Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+- `tesseract` (`brew install tesseract`).
+- **Two macOS permissions** for whichever app hosts this MCP server (Terminal,
+  iTerm, Claude Desktop, …):
+  1. **Screen Recording** — System Settings → Privacy & Security →
+     Screen & System Audio Recording.
+  2. **Accessibility** — System Settings → Privacy & Security → Accessibility.
+  Restart the host app after granting them. `vroid_status` reports both.
 
-| | needed for | how portable |
-|---|---|---|
-| **Hyprland** ≥ 0.55 | window discovery, focus, workspaces, closing the screensaver — via `hyprctl` and its Lua dispatch API | **Hyprland-specific.** All of it lives in `src/mcp_vroid/driver/window.py`; a Sway port is a `swaymsg` rewrite of that one file. |
-| `grim` | screenshots | any **wlroots** compositor (`wlr-screencopy`) |
-| **`zwlr_virtual_pointer_unstable_v1`** | moving and clicking the real cursor | any **wlroots** compositor |
-| **Xwayland** (`DISPLAY`) | keyboard and wheel, via X11 **XTEST** | any Wayland session with Xwayland |
-| `tesseract` + `eng` traineddata | OCR — the entire locating story | portable |
-| `gcc`, `wayland-scanner`, `libwayland-client` | building the pointer helper | portable |
-| **VRoid Studio** via Steam/Proton (appid `1486350`) | the app being driven | the Steam launch path is assumed; a native/Wine install needs the launch command changed |
-| Python **3.11+** and [`uv`](https://docs.astral.sh/uv/) | the server itself | portable |
-
-So: **wlroots + Xwayland** for the input and capture layer, **Hyprland only**
-for window management. On Arch:
+## Install
 
 ```bash
-sudo pacman -S grim tesseract tesseract-data-eng wayland gcc pkgconf
+git clone <this directory> ~/mcp-vroid-mac
+cd ~/mcp-vroid-mac
+uv sync
 ```
-
-## Quickstart
-
-```bash
-git clone https://github.com/nhodges/mcp-vroid
-cd mcp-vroid
-uv sync                 # virtualenv + dependencies
-bash native/build.sh    # builds native/vpointer  <-- REQUIRED, not optional
-```
-
-`native/build.sh` compiles a ~150-line C client for the Wayland
-virtual-pointer protocol (the protocol XML is vendored under
-`native/protocols/`). Without it every pointer tool fails with
-`native/vpointer missing`; `vroid_status` tells you whether it is there.
 
 Register it with Claude Code:
 
 ```bash
-claude mcp add vroid -- uv run --directory /path/to/mcp-vroid mcp-vroid
+claude mcp add --scope user vroid-mac -- \
+  uv run --directory /path/to/mcp-vroid-mac mcp-vroid-mac
 ```
+
+Register it with **pi** (writes `~/.pi/agent/mcp.json`):
+
+```bash
+pi mcp add vroid -- uv run --directory /path/to/mcp-vroid-mac mcp-vroid-mac
+pi mcp list        # expect: vroid: connected, 18 tools
+```
+
+Register it with **DSH** by adding an insert row to
+`~/.dsh/profiles/<profile>/cordis.patch.yml` (the profile in use — `desktop`
+for the desktop app, which also serves the web GUI):
+
+```yaml
+- insert:
+    - id: mcp-vroid
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        serverName: vroid
+        transport: stdio
+        command: /Users/you/.local/bin/uv
+        args:
+          - run
+          - --directory
+          - /path/to/mcp-vroid-mac
+          - mcp-vroid-mac
+        cwd: /path/to/mcp-vroid-mac
+        env:
+          HOME: /Users/you
+          PATH: /Users/you/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+```
+
+Validate without restarting: `dsh --profile desktop --dump-config | grep -A12 mcp-vroid`
+(a raw `- id: …` row at top level would be an *override* and logs
+"patch: entry … not found"; MCP servers are new rows, so they must be inside
+`insert:`). DSH's HMR picks it up live and the tools appear as
+`mcp__vroid__vroid_*`.
 
 …or with any client that takes an `mcpServers` block:
 
@@ -88,214 +92,115 @@ claude mcp add vroid -- uv run --directory /path/to/mcp-vroid mcp-vroid
   "mcpServers": {
     "vroid": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/mcp-vroid", "mcp-vroid"]
+      "args": ["run", "--directory", "/path/to/mcp-vroid-mac", "mcp-vroid-mac"]
     }
   }
 }
 ```
 
-Then ask your client to call `vroid_status`, and if it looks healthy,
-`vroid_launch()`.
-
-Clients often start servers with a **sanitised environment**. This server
-recovers `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `HYPRLAND_INSTANCE_SIGNATURE`
-and `DISPLAY` from the runtime dir at startup
-(`src/mcp_vroid/session_env.py`), so `hyprctl` / `grim` / XTEST work anyway.
-`vroid_status` reports what it had to fill in; anything already in the
-environment wins.
-
-Optional environment variables:
-
-| var | default | meaning |
-|---|---|---|
-| `MCP_VROID_CAPTURES` | `$XDG_STATE_HOME/mcp-vroid/captures` | where screenshots are written |
-| `MCP_VROID_OUT` | `$XDG_STATE_HOME/mcp-vroid/out` | default dir for exports/saves |
-| `MCP_VROID_VPOINTER` | `<checkout>/native/vpointer` | path to the pointer helper |
-| `MCP_VROID_MAX_IMAGE_PX` | `1600` | longest edge of images sent to the client (0 = never downscale) |
+Then call `vroid_status` first: it tells you whether VRoid is running, whether
+it is focused, and whether both permissions are in place.
 
 ## Tools
 
-18 tools, in four groups.
+The same tool set as the original server, 18 tools in four groups.
 
-**Lifecycle**
+**Lifecycle** — `vroid_launch` (opens/brings the app forward), `vroid_status`
+(window, focus, permissions, helpers), `vroid_release` (no-op on macOS).
 
-| tool | what it does |
-|---|---|
-| `vroid_launch(restart=false, timeout=240)` | Start VRoid via Steam if needed, park it on Hyprland workspace 9, remember the workspace you were on, focus + fullscreen it. `restart=true` kills the running instance first — unsaved work is lost. |
-| `vroid_status()` | Window present/focused/title/geometry, active workspace, capture dirs, and whether `vpointer`/`grim`/`tesseract`/`hyprctl` are available. Read-only, no OCR. |
-| `vroid_release()` | Switch back to the workspace the user was on. VRoid keeps running on ws 9. |
+**Seeing** — `vroid_screenshot`, `vroid_find_text`, `vroid_find_button`,
+`vroid_current_screen`. Everything works in **image pixels of the window
+capture**, so coordinates from `find_*` go straight into `click`.
 
-**Seeing**
+**Acting (raw)** — `vroid_click`, `vroid_drag`, `vroid_scroll`, `vroid_type`,
+`vroid_key`. `ctrl+…` shortcuts are translated to Command (⌘), because VRoid's
+macOS shortcuts use ⌘.
 
-| tool | what it does |
-|---|---|
-| `vroid_screenshot(region?, tag?, whole_screen?, full_resolution?)` | Capture the window (or the whole output, for the Wine save dialog), save it, and return it as MCP image content for the client's model to look at. Reports native size and the downscale factor applied for transport. |
-| `vroid_find_text(query, region?, exact?, limit?)` | Fresh capture + tesseract; returns matching word boxes and centres in image px. Pass `region` — full-frame OCR takes ~10 s, a panel ~2 s. |
-| `vroid_find_button(color='primary'\|'disabled', label?, region?)` | Finds VRoid's solid `#0096FA` pills by colour, because tesseract loses white-on-blue labels. A grey pill means *disabled*. |
-| `vroid_current_screen()` | `start` / `editor` / `export_vrm` / `hair_editor` / `unknown`. |
-
-**Acting — raw input**
-
-| tool | what it does |
-|---|---|
-| `vroid_click(x, y, space='image', button='left', double=false)` | Glides the pointer in a few steps (so hover states fire) and clicks. |
-| `vroid_drag(x1, y1, x2, y2, space='image', button='left')` | Press → 24-step glide → release. Right-drag orbits the camera, middle-drag pans. |
-| `vroid_scroll(dy, dx=0, x?, y?, space='image')` | Wheel, as X11 buttons 4/5 (6/7 horizontal). Park the pointer over the panel you mean to scroll. |
-| `vroid_type(text, clear_first=false)` | Types into the focused widget over XTEST. |
-| `vroid_key(combo, times=1)` | `Return`, `Escape`, `ctrl+s`, `ctrl+shift+s`, … |
-
-**Acting — flows**
-
-| tool | what it does |
-|---|---|
-| `vroid_new_character(base='Fem'\|'Masc')` | Start screen → Create New → base → editor. |
-| `vroid_open_tab(name)` | Face / Hairstyle / Body / Outfit / Accessories / Look. |
-| `vroid_set_slider(label, value)` | Scrolls the Parameters panel to the row and types an exact value into its numeric box. |
-| `vroid_set_color(label, hex)` | Same, for a `#RRGGBB` colour box. |
-| `vroid_export_vrm(path, avatar_name, creator, version='1.0')` | The whole Export-as-VRM walk, including the VRM Settings metadata modal and Wine's save dialog. `version` picks VRM1.0 or VRM0.0. |
-| `vroid_save_project(name?)` | Ctrl+Shift+S to an explicit `.vroid` path, or a plain Save with no argument. |
-
-Every acting tool focuses VRoid first and **refuses to act if the focused
-window is not VRoid Studio**.
+**Acting (flows)** — `vroid_new_character`, `vroid_open_tab`,
+`vroid_set_slider`, `vroid_set_color`, `vroid_export_vrm`,
+`vroid_save_project`.
 
 ## How it works
 
+```
+screencapture -l <window> ──► PNG ──► tesseract / cv2 ──► (x,y) ──► CGEvent
+      ▲                                                              │
+      └────────────────────  screenshot again  ◄────────────────────┘
+```
+
 The loop is **see → locate → act → see again**:
 
-1. `vroid_launch()`
-2. `vroid_screenshot()` — the image goes to the client's model, which *looks* at it
-3. `vroid_find_text("Export")` or `vroid_find_button()` for coordinates
-4. `vroid_click(x, y)` — always with coordinates from a *fresh* capture
-5. `vroid_screenshot()` to confirm what actually happened
+1. `vroid_launch()` → `vroid_screenshot()` (the image goes to the model)
+2. `vroid_find_text("Export")` / `vroid_find_button()` for coordinates
+3. `vroid_click(x, y)` with coordinates from a **fresh** capture
+4. `vroid_screenshot()` again to confirm what happened
 
-**Seeing** is `grim` on the Hyprland window geometry, then tesseract for word
-boxes and OpenCV for solid-colour buttons (VRoid's primary pills are
-`#0096FA`, and OCR reliably loses white-on-blue labels).
+Rules of thumb (inherited from the original, learned the hard way): read the
+whole frame rather than a crop so modals are not missed; judge change by a UI
+strip rather than the dithering 3D viewport; prefer typing exact values into
+numeric boxes over dragging sliders; a grey “primary” button means a required
+field is still empty.
 
-**Acting** goes down two different paths, for annoying reasons:
+## Calibration and caveats
 
-* *Pointer* — a small C client (`native/vpointer.c`) speaking
-  `zwlr_virtual_pointer_unstable_v1`. It moves the real compositor cursor, so
-  hover states and drags behave exactly as they do for a human, and it needs
-  no permissions: `ydotool`'s `/dev/uinput` route is `0600 root:root` and
-  would need sudo or a udev rule.
-* *Keyboard and wheel* — X11 **XTEST** through Xwayland, because the
-  virtual-pointer protocol has no keyboard counterpart and VRoid is an
-  Xwayland client anyway.
+The VRoid-specific anchors and OCR needles in `driver/actions.py` were
+calibrated on **VRoid Studio 2.14.0**, English UI, at 2560×1440. The native
+macOS app here is **2.16.0**, so some flows may need re-measuring:
 
-**Coordinate spaces.** Three are in play and they are all different:
+- `vroid_new_character`, `vroid_open_tab`, `vroid_set_slider`,
+  `vroid_set_color` use fractional anchors of the window, which survive
+  resolution changes but not a UI reflow.
+- `vroid_export_vrm` was written against Wine's file dialog. On macOS it now
+  drives the native save panel (⌘⇧G → folder → filename → Return), but this
+  path is the least tested part of the port.
 
-| space | size on the reference machine | who uses it |
-|---|---|---|
-| Hyprland **layout** (logical) | 2048 × 1152 | `hyprctl`, the virtual pointer |
-| **image pixels** of a capture | 2560 × 1440 | tesseract, cv2, everything you see |
-| **X11** pixels (Xwayland) | 2560 × 1440 | XTEST |
-
-Tools take and return **image px** (`space="image"`) by default and convert
-internally, so `vroid_find_text` output can be handed straight to
-`vroid_click`. If `MCP_VROID_MAX_IMAGE_PX` downscaled the picture you were
-shown, multiply coordinates read off it by the inverse of the reported
-`downscale` — or just ask `vroid_find_text`, which always reports native px.
-
-Rules of thumb, learned the hard way:
-
-* **Read the whole frame, not a crop.** A "Close Hairstyle Editor" confirm
-  modal sat in the middle of the screen through six failed clicks because the
-  check only OCR'd the top 60 px.
-* **Don't judge change by the 3D viewport.** VRoid dithers every frame, so a
-  full-window diff reads ~0.98 even when nothing happened. Watch a UI strip.
-* **Prefer numeric boxes to slider drags.** `vroid_set_slider` types an exact
-  value; dragging is for controls that have no box.
-* **Primary buttons are found by colour, not text.** A grey pill where you
-  expect blue is the app telling you a required field is empty.
-
-A detailed map of VRoid's UI — tab strip, rails, panels, the export flow, the
-hair editor, with measured coordinates — is in **[docs/ui-map.md](docs/ui-map.md)**.
-
-## Limitations and brittleness
-
-This is GUI automation with no API underneath. Be realistic about it:
-
-* **OCR is the whole locating story**, and it is imperfect. Small,
-  letter-spaced or light-on-dark labels get split or dropped (`Export` →
-  `E` + `xport`). White-on-blue is lost entirely, which is why
-  `vroid_find_button` exists. Icons have no text at all — those anchors are
-  hard-coded fractions of the window.
-* **Coupled to the UI version.** Needles and fractional anchors were
-  calibrated on VRoid Studio 2.14.0, English, at 2560×1440 / scale 1.25. A
-  pixiv UI reflow, another language, or a different monitor can require
-  re-measuring. (Japanese UI → kebab `⋮` → Settings → Language.)
-* **Modals appear outside your search region** and swallow clicks silently.
-* **Timing is guessed.** The 3D viewport takes ~5 s after a base is chosen;
-  export takes 5–30 s, longer for heavy models.
-* **The Wine save dialog is a separate window** with its own class and
-  geometry — use `vroid_screenshot(whole_screen=true)` there.
-* **Single instance, single session.** One VRoid window, one desktop, no
-  headless mode, no parallelism. It drives *your* screen.
-* **The idle screensaver** can grab the session mid-run. The guard refuses to
-  type into it and closes that one window (and only that one) before acting.
-* **Attended use is recommended.** See below.
+The raw tools (`screenshot`, `find_text`, `find_button`, `click`, `type`,
+`key`, `drag`, `scroll`) are the reliable foundation — the model can always
+fall back to them, look at the screen, and drive the app step by step.
 
 ## Security
 
-**This server injects real mouse and keyboard events into your live desktop
-session and takes screenshots of it.** That is the entire point, and it is
-also the risk:
+This server injects real mouse/keyboard events into your live desktop session
+and takes screenshots of it. Run it attended, on a session you are watching.
+`vroid_launch(restart=true)` quits VRoid Studio and loses unsaved work.
+Captures are written unencrypted to
+`~/Library/Application Support/mcp-vroid/captures` (override with
+`MCP_VROID_CAPTURES`).
 
-* Screenshots may capture anything on the output — `whole_screen=true`
-  captures everything, and captures are written to disk unencrypted.
-* Keystrokes go to whatever holds keyboard focus. The driver refuses to act
-  unless VRoid Studio is focused, but a careless or hostile prompt can still
-  click anywhere *inside* VRoid.
-* `vroid_launch(restart=true)` kills VRoid Studio and loses unsaved work.
-* Nothing here is sandboxed and there is no confirmation step.
+## How this relates to upstream
 
-**Run it attended**, on a session you are watching. Don't run it on a shared
-or multi-user machine, don't leave an agent driving it unsupervised, and treat
-the captures directory as sensitive. `vroid_release()` gives the desktop back
-when you're done.
+The platform layer sits behind `driver/backend.py`:
 
-## Development
+```
+driver/backend.py      picks the platform modules
+driver/window_mac.py   CGWindowList + NSRunningApplication
+driver/capture_mac.py  screencapture
+driver/input_mac.py    Quartz CGEvent
+driver/window.py       upstream Linux: Hyprland
+driver/capture.py      upstream Linux: grim
+driver/input.py        upstream Linux: virtual pointer + XTEST
+driver/actions.py      shared VRoid flows
+driver/locate.py       shared OCR / colour matching
+server.py              shared MCP tools
+```
+
+So the macOS diff is additive: `native/`, the Linux modules and
+`README.upstream.md` stay as upstream shipped them, and the tool flows are
+shared.
+
+To pull upstream changes:
 
 ```bash
-uv run python scripts/smoke_test.py              # start the server, list tools, call vroid_status
-uv run python scripts/smoke_test.py --screenshot # + one passive capture if VRoid is open
-uv run vroid-driver shot                         # the original driver CLI, still here
+git remote add upstream https://github.com/nhodges/mcp-vroid
+git fetch upstream
+git merge upstream/main      # conflicts should be confined to actions/server
 ```
 
-`vroid-driver` (`mcp_vroid.driver.cli`) is a shell interface to the same
-engine — `launch`, `shot`, `find`, `click`, `tab`, `slider`, `export`, `cam`,
-`apply-params`, … — handy for debugging without an MCP client in the loop.
-
-Layout:
-
-```
-src/mcp_vroid/server.py       MCP tool definitions (stdio)
-src/mcp_vroid/session_env.py  recovers the Wayland/X session env
-src/mcp_vroid/driver/         the engine
-  window.py                   hyprctl: find / launch / focus / workspaces   <- Hyprland-specific
-  capture.py                  grim + coordinate spaces
-  locate.py                   tesseract OCR + colour button matching
-  input.py                    vpointer (Wayland) + XTEST (X11)
-  actions.py                  the VRoid-specific flows
-native/vpointer.c             zwlr_virtual_pointer client
-```
-
-## Contributing
-
-Issues and PRs welcome. Useful things to bring:
-
-* **A port to another wlroots compositor.** Only `driver/window.py` is
-  Hyprland-specific; the rest already works anywhere `grim` and
-  `zwlr_virtual_pointer` do.
-* **Anchors for other resolutions or DPI scales**, or for the Japanese UI.
-* **Bug reports** — include your compositor, VRoid Studio version, monitor
-  resolution and scale, and the output of `vroid_status`. A capture from the
-  failing step helps enormously.
-
-Nothing here is auto-formatted or linted by CI; match the surrounding style.
+If upstream merges its Windows backend seam (PRs #1/#2, which also introduce
+`driver/backend.py`), this port can be rebased onto that seam nearly as-is.
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE). VRoid Studio is a product of pixiv Inc.; this
-project is unaffiliated with pixiv and simply drives the app's UI.
+MIT, same as the original. Upstream is Copyright (c) 2026 Nuri Hodges; see
+[`LICENSE`](LICENSE). VRoid Studio is a product of pixiv Inc.; this project is
+unaffiliated and simply drives the app's UI.
