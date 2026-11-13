@@ -46,13 +46,13 @@ Register it with Claude Code:
 
 ```bash
 claude mcp add --scope user vroid-mac -- \
-  uv run --directory /path/to/mcp-vroid-mac mcp-vroid-mac
+  uv run --no-editable --directory /path/to/mcp-vroid-mac mcp-vroid-mac
 ```
 
 Register it with **pi** (writes `~/.pi/agent/mcp.json`):
 
 ```bash
-pi mcp add vroid -- uv run --directory /path/to/mcp-vroid-mac mcp-vroid-mac
+pi mcp add vroid -- uv run --no-editable --directory /path/to/mcp-vroid-mac mcp-vroid-mac
 pi mcp list        # expect: vroid: connected, 18 tools
 ```
 
@@ -70,6 +70,7 @@ for the desktop app, which also serves the web GUI):
         command: /Users/you/.local/bin/uv
         args:
           - run
+          - --no-editable
           - --directory
           - /path/to/mcp-vroid-mac
           - mcp-vroid-mac
@@ -92,11 +93,17 @@ Validate without restarting: `dsh --profile desktop --dump-config | grep -A12 mc
   "mcpServers": {
     "vroid": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/mcp-vroid-mac", "mcp-vroid-mac"]
+      "args": ["run", "--no-editable", "--directory", "/path/to/mcp-vroid-mac", "mcp-vroid-mac"]
     }
   }
 }
 ```
+
+> **Why `--no-editable`?** Python 3.13 ignores `.pth` files whose names start
+> with `_`, which is what uv 0.5.x writes for editable installs
+> (`_editable_impl_*.pth`). Without the flag the server dies at import with
+> `ModuleNotFoundError: No module named 'mcp_vroid'`. `--no-editable` installs
+> the project as a regular wheel instead; newer uv releases may not need it.
 
 Then call `vroid_status` first: it tells you whether VRoid is running, whether
 it is focused, and whether both permissions are in place.
